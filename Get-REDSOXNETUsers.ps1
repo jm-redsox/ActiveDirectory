@@ -1,76 +1,33 @@
 Import-Module ActiveDirectory
 
-$values = @('Full Time','Part Time','Event Staff','Seasonal','ICS')
-$ldap   = "(|(extensionAttribute1=*)(extensionAttribute2=*)(extensionAttribute3=*))"
+# values to exclude
+$ExcludeValues = @('Full Time','Part Time','Event Staff','Seasonal','ICS')
 
-# We’ll also query a small set without presence filter to find those with no values at all.
-# To keep it efficient, scope with -SearchBase if possible.
+# store all users from ad db in a variable
+$allUsers =  Get-ADUser -Filter "*" -Properties "DistinguishedName", "Enabled", "GivenName", "mail", "extensionAttribute1", "extensionAttribute1", "extensionAttribute2", "extensionAttribute3", "Name", "ObjectClass", "ObjectGUID", "SamAccountName", "SID", "Surname", "UserPrincipalName"
 
-# 1) Pull users that have ANY of the attributes populated (presence)
-$withAny =
-Get-ADUser -LDAPFilter $ldap -Properties extensionAttribute1,extensionAttribute2,extensionAttribute3,DisplayName,SamAccountName,DistinguishedName,mail,Enabled
-
-# 2) Build the “clean” set (none of the populated values are disallowed)
-$resultsWithValues =
-$withAny | ForEach-Object {
-    $vals = @($_.extensionAttribute1,$_.extensionAttribute2,$_.extensionAttribute3) | Where-Object { $_ }
-    $hasDisallowed = $vals | Where-Object { $_ -in $values } | Select-Object -First 1
-    if (-not $hasDisallowed) {
-        [PSCustomObject]@{
-            DisplayName         = $_.DisplayName
-            SamAccountName      = $_.SamAccountName
-            DistinguishedName   = $_.DistinguishedName
-            Mail                = $_.mail
-            Enabled             = $_.Enabled
-            ExtAttr1            = $_.extensionAttribute1
-            ExtAttr2            = $_.extensionAttribute2
-            ExtAttr3            = $_.extensionAttribute3
-            ValuesPresent       = ($vals -join '; ')
-            HasDisallowedValue  = $false
-            HasAnyValue         = $true
-        }
+# extract specific attributes and hold them in a variable (array)
+$results = @()
+foreach ($user in $allUsers) {
+    $results += [PSCustomObject]@{
+        DisplayName         = $user.DisplayName
+        DistinguishedName   = $user.DistinguishedName
+        Enabled             = $user.Enabled
+        Name                = $user.Name
+        GivenName           = $user.GivenName
+        Surname             = $user.Surname
+        UserPrincipalName   = $user.UserPrincipalName
+        mail                = $user.mail
+        ExtensionAttribute1 = $user.ExtensionAttribute1
+        ExtensionAttribute2 = $user.ExtensionAttribute2
+        ExtensionAttribute3 = $user.ExtensionAttribute3
+        SamAccountName      = $user.SamAccountName
     }
 }
 
-# 3) Pull users where NONE of the three attributes are set
-#    Use a negative presence LDAP filter to avoid client-side scanning.
-$noValuesLdap = "(&(!(extensionAttribute1=*))
-                    (!(extensionAttribute2=*))
-                    (!(extensionAttribute3=*)))"
-
-$noValues =
-Get-ADUser -LDAPFilter $noValuesLdap -Properties DisplayName,SamAccountName,DistinguishedName,mail,Enabled
-
-$resultsNoValues =
-$noValues | ForEach-Object {
-    [PSCustomObject]@{
-        DisplayName         = $_.DisplayName
-        SamAccountName      = $_.SamAccountName
-        DistinguishedName   = $_.DistinguishedName
-        Mail                = $_.mail
-        Enabled             = $_.Enabled
-        ExtAttr1            = $null
-        ExtAttr2            = $null
-        ExtAttr3            = $null
-        ValuesPresent       = ''
-        HasDisallowedValue  = $false
-        HasAnyValue         = $false
-    }
+# filter out users based on the exclusion criteria
+$filteredResults = $results | Where-Object {
+    $_.ExtensionAttribute1 -notin $ExcludeValues -and
+    $_.ExtensionAttribute2 -notin $ExcludeValues -and
+    $_.ExtensionAttribute3 -notin $ExcludeValues
 }
-
-# At this point you have two separate, queryable collections:
-# - $resultsWithValues : have at least one ext attr populated, none are disallowed
-# - $resultsNoValues   : none of the three ext attrs are set
-
-# Optional: Combine if you want a full “good” snapshot in one table
-$resultsAll = @()
-$resultsAll += $resultsWithValues
-$resultsAll += $resultsNoValues
-
-# Examples:
-# $resultsWithValues.Count
-# $resultsNoValues.Count
-# $resultsAll | Group-Object HasAnyValue
-# $resultsWithValues | Sort-Object DisplayName | Format-Table DisplayName,SamAccountName,ValuesPresent -AutoSize
-# $resultsNoValues   | Export-Csv .\Users-ExtAttr-None.csv -NoTypeInformation -Encoding UTF8
-# $resultsWithValues | Export-Csv .\Users-ExtAttr-PresentNotDisallowed.csv -NoTypeInformation -Encoding UTF8
